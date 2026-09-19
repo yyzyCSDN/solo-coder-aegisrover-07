@@ -3,6 +3,7 @@ import pytest
 
 from aegisrover.mission.allocation import Conflict, Deadlock, Reservation, ReservationBook
 from aegisrover.mission.lifecycle import InvalidTransition, MissionService
+from aegisrover.runtime.negotiation import Offer
 from aegisrover.storage.audit import AuditLog
 from aegisrover.storage.repository import NotFound, Repository, VersionConflict
 
@@ -113,6 +114,50 @@ def test_mission_dispatch_respects_priority_and_capabilities(repo):
     second = service.claim_next('robot-2', ['lidar', 'arm'])
     assert second.mission_id == 'high'
     assert service.claim_next('robot-3', ['lidar', 'arm']) is None
+
+
+def test_mission_dispatch_runs_degraded_and_audits_blocking_reasons(repo):
+    clock = FakeClock()
+    audit = AuditLog(repo, clock=clock)
+    service = MissionService(repo, audit=audit, clock=clock)
+    service.create('nav', [(0, 0)], priority=0,
+                   capability_requirements=[{'name': 'lidar', 'major': 1, 'minor': 2}])
+    service.create('photo', [(1, 1)], priority=1,
+                   capability_requirements=[
+                       {'name': 'camera', 'major': 1},
+                       {'name': 'hdr', 'optional': True},
+                   ])
+    service.create('arm', [(2, 2)], priority=9,
+                   capability_requirements=[{'name': 'arm', 'major': 2}])
+    for name in ('nav', 'photo', 'arm'):
+        service.command(name, 'queue')
+
+    offers = [Offer('lidar', 1, 3), Offer('camera', 1, 0), Offer('arm', 1, 9)]
+    plan = service.plan_claims('robot-1', offers)
+    assert [d.task_id for d in plan.blocked] == ['arm']
+    assert [d.task_id for d in plan.degraded] == ['photo']
+
+    assigned = service.claim_next('robot-1', offers, audit=False)
+    assert assigned.mission_id == 'photo'
+    entry = assigned.history[-1]
+    assert entry['metadata']['capability_status'] == 'degraded'
+    assert entry['metadata']['capability_issues'][0]['name'] == 'hdr'
+    assert assigned.capability_status == 'degraded'
+    assert assigned.capability_issues[0]['reason'] == 'missing_optional_features'
+    assert service.get('arm').state == 'queued'
+    assert {e.action for e in audit.entries()} >= {'capability.degraded', 'capability.blocked'}
+    blocked_payload = next(e.payload for e in audit.entries()
+                           if e.action == 'capability.blocked')
+    assert blocked_payload['decision']['issues'][0]['reason'] == 'major_mismatch'
+
+
+def test_mission_dispatch_can_refuse_degraded_work(repo):
+    service = MissionService(repo, clock=FakeClock())
+    service.create('photo', [(1, 1)], capability_requirements=[
+        {'name': 'camera', 'major': 1}, {'name': 'hdr', 'optional': True}])
+    service.command('photo', 'queue')
+    assert service.claim_next('robot-1', [Offer('camera', 1, 0)], allow_degraded=False) is None
+    assert service.get('photo').state == 'queued'
 
 
 def test_reservations_are_half_open():

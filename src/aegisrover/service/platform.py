@@ -53,11 +53,13 @@ class PlatformService:
 
     # -- missions --------------------------------------------------------------
     def create_mission(self, mission_id: str, waypoints, *, priority: int = 0,
-                       required_capabilities=(), actor: str = 'operator',
-                       idempotency_key: str | None = None) -> dict:
+                       required_capabilities=(), capability_requirements=(),
+                       actor: str = 'operator', idempotency_key: str | None = None) -> dict:
         def action() -> dict:
             mission = self.missions.create(mission_id, waypoints, priority=priority,
-                                           required_capabilities=required_capabilities, actor=actor)
+                                           required_capabilities=required_capabilities,
+                                           capability_requirements=capability_requirements,
+                                           actor=actor)
             return {'mission': mission.to_dict(), 'applied': True}
 
         return self._idempotent(f'create:{mission_id}', idempotency_key, action)
@@ -80,6 +82,9 @@ class PlatformService:
 
     def list_missions(self, *, state: str | None = None) -> list[dict]:
         return [m.to_dict() for m in self.missions.list_missions(state=state)]
+
+    def plan_robot_missions(self, robot: str, capabilities, *, actor: str = 'operator') -> dict:
+        return self.missions.plan_claims(robot, capabilities, actor=actor).to_dict()
 
     # -- maps ------------------------------------------------------------------
     def save_map(self, map_id: str, cells: dict, *, actor: str = 'operator',

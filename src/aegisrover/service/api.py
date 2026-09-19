@@ -18,12 +18,18 @@ class MissionRequest(BaseModel):
     waypoints: list[tuple[float, float]] = Field(min_length=1)
     priority: int = 0
     required_capabilities: list[str] = Field(default_factory=list)
+    capability_requirements: list[dict] = Field(default_factory=list)
 
 
 class CommandRequest(BaseModel):
     command: str
     assignee: str | None = None
     expected_revision: int | None = None
+
+
+class RobotCapabilityPlanRequest(BaseModel):
+    robot: str
+    capabilities: list[dict | str] = Field(default_factory=list)
 
 
 class SessionRequest(BaseModel):
@@ -92,7 +98,9 @@ def _guard(operation):
 def create_mission(req: MissionRequest, idempotency_key: str | None = None):
     return _guard(lambda: service.create_mission(
         req.mission_id, req.waypoints, priority=req.priority,
-        required_capabilities=req.required_capabilities, idempotency_key=idempotency_key))
+        required_capabilities=req.required_capabilities,
+        capability_requirements=req.capability_requirements,
+        idempotency_key=idempotency_key))
 
 
 @app.post('/v1/missions/{mission_id}/commands')
@@ -105,6 +113,11 @@ def command_mission(mission_id: str, req: CommandRequest, idempotency_key: str |
 @app.get('/v1/missions/{mission_id}')
 def get_mission(mission_id: str):
     return _guard(lambda: service.get_mission(mission_id))
+
+
+@app.post('/v1/robots/capability-plan')
+def robot_capability_plan(req: RobotCapabilityPlanRequest):
+    return _guard(lambda: service.plan_robot_missions(req.robot, req.capabilities))
 
 
 @app.post('/v1/sessions')

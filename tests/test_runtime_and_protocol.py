@@ -10,7 +10,7 @@ from aegisrover.protocol.auth import ReplayWindow
 from aegisrover.runtime.backpressure import AdmissionController
 from aegisrover.runtime.clock import MonotonicOrder, estimate as estimate_clock
 from aegisrover.runtime.negotiation import (
-    NegotiationError, Offer, Requirement, negotiate,
+    NegotiationError, Offer, Requirement, negotiate, plan_tasks, task,
 )
 from aegisrover.runtime.session import ACTIVE, EXPIRED, SessionError, SessionRegistry
 from aegisrover.storage.audit import AuditLog
@@ -102,6 +102,34 @@ def test_negotiation_degrades_optional_requirements():
     assert report.ok
     assert report.accepted['lidar'].minor == 4  # highest compatible minor wins
     assert report.degraded[0].reason == 'missing_optional_features'
+
+
+def test_task_plan_isolates_degraded_runnable_and_blocked_tasks():
+    plan = plan_tasks(
+        [
+            task('nav', [Requirement('lidar', major=1, minor=2)]),
+            task('photo', [Requirement('camera', major=1), Requirement('hdr', optional=True)]),
+            task('arm-mission', [Requirement('arm', major=2)]),
+        ],
+        [Offer('lidar', 1, 3), Offer('camera', 1, 0), Offer('arm', 1, 9)],
+    )
+
+    assert [d.task_id for d in plan.ready] == ['nav']
+    assert [d.task_id for d in plan.degraded] == ['photo']
+    assert [d.task_id for d in plan.blocked] == ['arm-mission']
+    assert [d.task_id for d in plan.runnable] == ['nav', 'photo']
+    assert not plan.all_runnable
+    blocked = plan.blocked[0].issues[0]
+    assert blocked.reason == 'major_mismatch'
+    assert blocked.required['major'] == 2
+    assert blocked.offered[0]['major'] == 1
+    assert plan.to_dict()['decisions'][1]['issues'][0]['optional'] is True
+
+
+def test_unused_capability_mismatch_does_not_block_unrelated_task():
+    plan = plan_tasks([task('nav', [Requirement('lidar', major=1)])],
+                      [Offer('lidar', 1, 0), Offer('camera', 2, 0)])
+    assert plan.all_runnable and plan.ready[0].task_id == 'nav'
 
 
 # ----------------------------------------------------------------------- backpressure
