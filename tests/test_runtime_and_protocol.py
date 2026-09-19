@@ -9,6 +9,9 @@ from aegisrover.protocol.transport import (
 from aegisrover.protocol.auth import ReplayWindow
 from aegisrover.runtime.backpressure import AdmissionController
 from aegisrover.runtime.clock import MonotonicOrder, estimate as estimate_clock
+from aegisrover.runtime.fallback import (
+    TaskRequirements, plan_fallback, record_fallback_plan,
+)
 from aegisrover.runtime.negotiation import (
     NegotiationError, Offer, Requirement, negotiate,
 )
@@ -102,6 +105,56 @@ def test_negotiation_degrades_optional_requirements():
     assert report.ok
     assert report.accepted['lidar'].minor == 4  # highest compatible minor wins
     assert report.degraded[0].reason == 'missing_optional_features'
+
+
+def test_fallback_plan_keeps_unaffected_and_optional_degraded_tasks_running():
+    tasks = [
+        TaskRequirements.create('inspect', [Requirement('lidar', 1, 1)]),
+        TaskRequirements.create(
+            'photo-with-hdr',
+            [Requirement('drive', 1, 0)],
+            [Requirement('camera', 1, 2, frozenset({'hdr'}))],
+        ),
+        TaskRequirements.create('dock-v2', [Requirement('dock', 2, 0)]),
+    ]
+    offers = [
+        Offer('lidar', 1, 3),
+        Offer('drive', 1, 0),
+        Offer('camera', 1, 1),
+        Offer('dock', 1, 4),
+    ]
+
+    plan = plan_fallback(tasks, offers)
+
+    assert plan.ok is False
+    assert [task.task_id for task in plan.runnable] == ['inspect', 'photo-with-hdr']
+    assert [task.task_id for task in plan.degraded] == ['photo-with-hdr']
+    assert [task.task_id for task in plan.blocked] == ['dock-v2']
+    degraded = plan.degraded[0].issues[0]
+    assert (degraded.capability, degraded.reason, degraded.severity) == (
+        'camera', 'minor_too_old', 'degraded')
+    blocked = plan.blocked[0].issues[0]
+    assert blocked.severity == 'blocking' and blocked.reason == 'major_mismatch'
+
+
+def test_fallback_plan_records_decision_for_audit(repo):
+    from aegisrover.storage.audit import AuditLog
+    from aegisrover.storage.event_store import EventStore
+
+    audit = AuditLog(repo)
+    events = EventStore(repo)
+    plan = plan_fallback(
+        [TaskRequirements.create('simple', [Requirement('drive', 1, 0)])],
+        [Offer('drive', 1, 0)],
+    )
+
+    payload = record_fallback_plan(plan, actor='scheduler', audit=audit, events=events)
+
+    assert payload['runnable_task_ids'] == ['simple']
+    assert audit.entries() and audit.verify() == ()
+    recorded = events.tail()
+    assert recorded.kind == 'capability.fallback'
+    assert recorded.payload['blocked_task_ids'] == []
 
 
 # ----------------------------------------------------------------------- backpressure

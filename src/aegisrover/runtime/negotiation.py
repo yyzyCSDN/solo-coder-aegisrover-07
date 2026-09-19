@@ -86,8 +86,8 @@ def negotiate(requirements: Iterable[Requirement], offers: Iterable[Offer]) -> N
                 degraded.append(Rejection(requirement.name, 'missing_optional_features',
                                           ','.join(sorted(missing))))
             continue
-        if requirement.optional:
-            reason = reason if reason == 'missing_optional_features' else 'missing_optional_features'
+        if requirement.optional and reason == 'missing_features':
+            reason = 'missing_optional_features'
         problem = Rejection(requirement.name, reason, detail)
         (degraded if requirement.optional else rejected).append(problem)
     return Negotiation(accepted=accepted, degraded=tuple(degraded), rejected=tuple(rejected))
